@@ -1,0 +1,39 @@
+#!/bin/bash
+# browser-start — launch the persistent Chromium with CDP on port 9222.
+# Profile: ~/workspace/browser-profile (survives restarts).
+# Uses the local proxy-auth forwarder (127.0.0.1:8888) for egress.
+# Kill existing first to avoid duplicates.
+
+# Kill existing (avoid matching our own cmdline)
+python3 -c "
+import os, signal
+for pid in os.listdir('/proc'):
+    if not pid.isdigit():
+        continue
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            cmd = f.read().decode()
+        if 'remote-debugging-port=9222' in cmd and 'python3' not in cmd and int(pid) != os.getpid():
+            os.kill(int(pid), signal.SIGTERM)
+    except (OSError, ValueError):
+        pass
+" 2>/dev/null
+sleep 1
+
+mkdir -p /home/hatch/workspace/browser-profile
+
+# Ensure the auth proxy is running
+if ! curl -sm 3 -x http://127.0.0.1:8888 https://example.com -o /dev/null 2>/dev/null; then
+  nohup /home/hatch/workspace/bin/proxy-auth > /tmp/proxy-auth.log 2>&1 &
+  sleep 2
+fi
+
+/opt/meta-chromium/chrome --headless --no-sandbox --disable-gpu \
+  --remote-debugging-port=9222 \
+  --remote-allow-origins='*' \
+  --user-data-dir=/home/hatch/workspace/browser-profile \
+  --no-first-run --no-default-browser-check \
+  --proxy-server="http://127.0.0.1:8888" \
+  --ignore-certificate-errors \
+  about:blank > /tmp/chrome-cdp.log 2>&1 &
+echo "browser started (CDP on 9222, profile ~/workspace/browser-profile)"

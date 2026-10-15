@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""cdp — control the persistent Chromium instance via CDP.
+
+The browser runs headless on port 9222 with profile at
+~/workspace/browser-profile. Start it with: ~/workspace/bin/browser-start
+
+Usage:
+  cdp tabs                    List open tabs
+  cdp new <url>               Open URL in new tab
+  cdp goto <tab-id> <url>     Navigate tab to URL
+  cdp shot <tab-id> [file]    Screenshot tab to file
+  cdp close <tab-id>          Close tab
+"""
+import json
+import sys
+import urllib.parse
+import urllib.request
+
+CDP = "http://127.0.0.1:9222"
+
+
+def api(path, method="GET", data=None):
+    req = urllib.request.Request(f"{CDP}{path}", method=method,
+                                 data=json.dumps(data).encode() if data else None)
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def tabs():
+    return api("/json/list")
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        return
+    cmd = sys.argv[1]
+    if cmd == "tabs":
+        for t in tabs():
+            if t["type"] == "page":
+                print(f"{t['id'][:8]}  {t['title'][:50]}  {t['url'][:60]}")
+    elif cmd == "new" and len(sys.argv) > 2:
+        t = api("/json/new?" + urllib.parse.urlencode({"url": sys.argv[2]}), method="PUT")
+        print(f"opened {t['id'][:8]}")
+    elif cmd == "goto" and len(sys.argv) > 3:
+        tid = sys.argv[2]
+        full = next((t["id"] for t in tabs() if t["id"].startswith(tid)), tid)
+        api(f"/json/new?{urllib.parse.urlencode({'url': sys.argv[3]})}", method="PUT")
+        print("navigated (new tab)")
+    elif cmd == "shot":
+        print("screenshot via CDP needs websocket; use lightpanda for now")
+    elif cmd == "close" and len(sys.argv) > 2:
+        tid = sys.argv[2]
+        full = next((t["id"] for t in tabs() if t["id"].startswith(tid)), tid)
+        api(f"/json/close/{full}")
+        print("closed")
+    else:
+        print(__doc__)
+
+
+if __name__ == "__main__":
+    main()

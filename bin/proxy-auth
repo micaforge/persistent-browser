@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""proxy-auth — local forward proxy that injects upstream proxy auth.
+
+Listens on 127.0.0.1:8888, forwards CONNECT + HTTP requests to the
+authenticated egress proxy (from ~/workspace/9router/.local/proxy.env),
+adding Proxy-Authorization. Lets headless Chrome use --proxy-server
+without embedded credentials.
+
+Usage: proxy-auth &   (runs forever)
+"""
+import base64
+import os
+import socket
+import threading
+import urllib.parse
+
+LISTEN = ("127.0.0.1", 8888)
+
+
+def load_upstream():
+    with open(os.path.expanduser("~/workspace/9router/.local/proxy.env")) as f:
+        for line in f:
+            if line.startswith("HTTPS_PROXY="):
+                u = urllib.parse.urlparse(line.split("=", 1)[1].strip())
+                auth = base64.b64encode(f"{u.username}:{u.password}".encode()).decode()
+                return u.hostname, u.port, auth
+    raise RuntimeError("no HTTPS_PROXY in proxy.env")
+
+
+UP_HOST, UP_PORT, UP_AUTH = load_upstream()
+
+
+def pipe(a, b):
+    try:
+        while True:
+            d = a.recv(65536)
+            if not d:
+                break
+            b.sendall(d)
+    except OSError:
+        pass
+    finally:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            s.close()
+
+
+def handle(client):
+    try:
+        # Read request head
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            d = client.recv(4096)
+            if not d:
+                client.close()
+                return
+            buf += d
+        head, rest = buf.split(b"\r\n\r\n", 1)
+        lines = head.decode("latin1").split("\r\n")
+        method, target, _ = lines[0].split(" ", 2)
+
+        up = socket.create_connection((UP_HOST, UP_PORT), timeout=15)
+        if method.upper() == "CONNECT":
+            up.sendall(
+                f"CONNECT {target} HTTP/1.1\r\n"
+                f"Host: {target}\r\n"
+                f"Proxy-Authorization: Basic {UP_AUTH}\r\n\r\n".encode()
+            )
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                d = up.recv(4096)
+                if not d:
+                    break
+                resp += d
+            if b" 200 " not in resp.split(b"\r\n", 1)[0]:
+                client.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                client.close()
+                up.close()
+                return
+            client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            if rest:
+                up.sendall(rest)
+        else:
+            # Plain HTTP: forward with auth header injected
+            out = [lines[0]]
+            for ln in lines[1:]:
+                if not ln.lower().startswith("proxy-authorization:"):
+                    out.append(ln)
+            out.append(f"Proxy-Authorization: Basic {UP_AUTH}")
+            up.sendall(("\r\n".join(out) + "\r\n\r\n").encode("latin1") + rest)
+        t1 = threading.Thread(target=pipe, args=(client, up), daemon=True)
+        t2 = threading.Thread(target=pipe, args=(up, client), daemon=True)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+    except OSError:
+        try:
+            client.close()
+        except OSError:
+            pass
+
+
+def main():
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(LISTEN)
+    srv.listen(50)
+    print(f"proxy-auth listening on {LISTEN[0]}:{LISTEN[1]}", flush=True)
+    while True:
+        c, _ = srv.accept()
+        threading.Thread(target=handle, args=(c,), daemon=True).start()
+
+
+if __name__ == "__main__":
+    main()
