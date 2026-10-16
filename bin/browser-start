@@ -20,18 +20,18 @@ for pid in os.listdir('/proc'):
 " 2>/dev/null
 sleep 1
 
-mkdir -p /home/hatch/workspace/browser-profile
+mkdir -p $HOME/workspace/browser-profile
 
 # Ensure the auth proxy is running
 if ! curl -sm 3 -x http://127.0.0.1:8888 https://example.com -o /dev/null 2>/dev/null; then
-  nohup /home/hatch/workspace/bin/proxy-auth > /tmp/proxy-auth.log 2>&1 &
+  nohup $HOME/workspace/bin/proxy-auth > /tmp/proxy-auth.log 2>&1 &
   sleep 2
 fi
 
 /opt/meta-chromium/chrome --headless --no-sandbox --disable-gpu \
   --remote-debugging-port=9222 \
   --remote-allow-origins='*' \
-  --user-data-dir=/home/hatch/workspace/browser-profile \
+  --user-data-dir=$HOME/workspace/browser-profile \
   --no-first-run --no-default-browser-check \
   --proxy-server="http://127.0.0.1:8888" \
   --ignore-certificate-errors \

@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Minimal CDP screenshot client, stdlib only. Usage: shot.py <url> <out.png> <width> <height>"""
+import base64, hashlib, http.client, json, os, socket, struct, sys, time
+
+url, out, W, H = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+
+# 1. get a page target
+conn = http.client.HTTPConnection("127.0.0.1", 9333, timeout=10)
+conn.request("PUT", "/json/new?about:blank")
+t = json.loads(conn.getresponse().read().decode())
+ws_url = t["webSocketDebuggerUrl"]
+conn.close()
+host_port = ws_url.split("//")[1].split("/")[0]
+path = "/" + "/".join(ws_url.split("//")[1].split("/")[1:])
+
+# 2. websocket handshake
+key = base64.b64encode(os.urandom(16)).decode()
+s = socket.create_connection(("127.0.0.1", 9333), timeout=30)
+req = (f"GET {path} HTTP/1.1\r\nHost: {host_port}\r\nUpgrade: websocket\r\n"
+       f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
+s.sendall(req.encode())
+resp = b""
+while b"\r\n\r\n" not in resp:
+    resp += s.recv(4096)
+assert b"101" in resp.split(b"\r\n")[0], resp[:100]
+
+def send(obj):
+    data = json.dumps(obj).encode()
+    mask = os.urandom(4)
+    hdr = bytes([0x81, 0x80 | len(data)]) if len(data) < 126 else \
+          bytes([0x81, 0x80 | 126]) + struct.pack(">H", len(data)) if len(data) < 65536 else \
+          bytes([0x81, 0x80 | 127]) + struct.pack(">Q", len(data))
+    s.sendall(hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+def recv_frame():
+    hdr = s.recv(2)
+    b1, b2 = hdr[0], hdr[1]
+    ln = b2 & 0x7F
+    if ln == 126:
+        ln = struct.unpack(">H", s.recv(2))[0]
+    elif ln == 127:
+        ln = struct.unpack(">Q", s.recv(8))[0]
+    data = b""
+    while len(data) < ln:
+        data += s.recv(ln - len(data))
+    return b1 & 0x0F, data
+
+def recv_msg():
+    buf, opcode = b"", None
+    while True:
+        op, data = recv_frame()
+        if op == 0x8:
+            raise RuntimeError("ws closed")
+        if op in (0x1, 0x2):
+            opcode, buf = op, data
+        elif op == 0x0:
+            buf += data
+        else:
+            continue
+        break
+    return json.loads(buf.decode())
+
+seq = [0]
+def cmd(method, params=None):
+    seq[0] += 1
+    send({"id": seq[0], "method": method, "params": params or {}})
+    while True:
+        m = recv_msg()
+        if m.get("id") == seq[0]:
+            if "error" in m:
+                raise RuntimeError(m["error"])
+            return m.get("result", {})
+
+cmd("Page.enable")
+cmd("Emulation.setDeviceMetricsOverride",
+    {"width": W, "height": H, "deviceScaleFactor": 1, "mobile": False})
+cmd("Page.navigate", {"url": url})
+
+# wait for load event
+deadline = time.time() + 30
+loaded = False
+while time.time() < deadline and not loaded:
+    try:
+        s.settimeout(1.0)
+        m = recv_msg()
+        if m.get("method") == "Page.loadEventFired":
+            loaded = True
+    except socket.timeout:
+        pass
+s.settimeout(30)
+time.sleep(5)  # let Chart.js finish drawing
+
+res = cmd("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True})
+with open(out, "wb") as f:
+    f.write(base64.b64decode(res["data"]))
+print(f"saved {out} ({os.path.getsize(out)} bytes)")
+s.close()

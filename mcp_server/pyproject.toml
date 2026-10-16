@@ -1,0 +1,10 @@
+[project]
+name = "persistent-browser-mcp"
+version = "0.1.0"
+description = "MCP server for persistent-browser — exposes mica browser caps as MCP tools"
+requires-python = ">=3.10"
+
+dependencies = ["mcp"]
+
+[project.scripts]
+persistent-browser-mcp = "server:main"
