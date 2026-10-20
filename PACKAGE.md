@@ -53,7 +53,7 @@ from SKILL.md alone, and go deeper via the pointers.
 ```bash
 # Install: clone + link bin/
 git clone https://github.com/micaforge/<package>.git
-ln -s ~/workspace/micaforge/repos/<package>/bin/* ~/workspace/bin/
+ln -s ~/workspace/projects/micaforge/repos/<package>/bin/* ~/workspace/bin/
 ```
 
 Or via `mica-scaffold --type agent` which sets up this layout from the template.
